@@ -31,7 +31,7 @@ type alias Poly = Nonempty Vertex
 
 type alias Model =
     { outer : Poly
-    --, inner : Poly
+    , inner : Poly
     , drag : Maybe Drag
     , solver : Solver
     }
@@ -42,41 +42,47 @@ type alias Drag =
     , vertex : Vertex
     }
 
-topLeft = {
-  position = { x = 30, y = 30 },
-  vars = { x = makeVariable 30, y = makeVariable 30 }
+makeVertex x y = {
+  position = { x = round <| x, y = round <| y },
+  vars = { x = makeVariable x, y = makeVariable y }
   }
 
-topRight = {
-  position = { x = 100, y = 30 },
-  vars = { x = makeVariable 100, y = makeVariable 30 }
-  }
-
-bottomRight = {
-  position = { x = 100, y = 100 },
-  vars = { x = makeVariable 100, y = makeVariable 100 }
-  }
-
-bottomLeft = {
-  position = { x = 30, y = 100 },
-  vars = { x = makeVariable 30, y = makeVariable 100 }
-  }
-
+topLeft = makeVertex 30 30
+topRight = makeVertex 100 30
+bottomRight = makeVertex 100 100
+bottomLeft = makeVertex 30 100
 outerPoly =
   topLeft ::: (topRight ::: (bottomRight ::: (NE.fromElement bottomLeft)))
+
+topMid = makeVertex 60 30
+rightMid = makeVertex 100 60
+bottomMid = makeVertex 60 100
+leftMid = makeVertex 30 60
+innerPoly =
+  topMid ::: (rightMid ::: (bottomMid ::: (NE.fromElement leftMid)))
+
+allVertex = NE.append outerPoly innerPoly
 
 stayOnCanvas : Vertex -> Solver -> Solver
 stayOnCanvas v s = addConstraint ((Var v.vars.x) .>=. (Lit 30)) s
   |> addConstraint ((Var v.vars.y) .>=. (Lit 30))
-  |> addConstraint ((Var v.vars.x) .<=. (Lit 300))
-  |> addConstraint ((Var v.vars.y) .<=. (Lit 300))
+  |> addConstraint ((Var v.vars.x) .<=. (Lit 500))
+  |> addConstraint ((Var v.vars.y) .<=. (Lit 500))
+
+constrainMid mid v1 v2 solver = addConstraint ((Var mid.vars.x) .=. (Var v1.vars.x) .*. 0.5 .+. (Var v2.vars.x) .*. 0.5) solver
+  |> addConstraint ((Var mid.vars.y) .=. (Var v1.vars.y) .*. 0.5 .+. (Var v2.vars.y) .*. 0.5)
 
 initialSolver = makeSolver
   |> addPointStays [
-      (topLeft.vars.x, topLeft.vars.y),
-      (topRight.vars.x, topRight.vars.y),
-      (bottomRight.vars.x, bottomRight.vars.y),
-      (bottomLeft.vars.x, bottomLeft.vars.y)
+      (topLeft.vars.x, topLeft.vars.y)
+    , (topRight.vars.x, topRight.vars.y)
+    , (bottomRight.vars.x, bottomRight.vars.y)
+    , (bottomLeft.vars.x, bottomLeft.vars.y)
+
+    -- , (topMid.vars.x, topMid.vars.y)
+    -- , (rightMid.vars.x, rightMid.vars.y)
+    -- , (bottomMid.vars.x, bottomMid.vars.y)
+    -- , (leftMid.vars.x, leftMid.vars.y)
     ]
   |> addConstraint ((Var topLeft.vars.x) .+. (Lit 30) .<=. (Var topRight.vars.x))
   |> addConstraint ((Var topLeft.vars.y) .+. (Lit 30) .<=. (Var bottomLeft.vars.y))
@@ -87,10 +93,16 @@ initialSolver = makeSolver
   |> addConstraint ((Var bottomLeft.vars.x) .+. (Lit 30) .<=. (Var topRight.vars.x)) -- not sure
   |> addConstraint ((Var bottomLeft.vars.x) .+. (Lit 30) .<=. (Var bottomRight.vars.x)) -- not sure
   |> (\s -> List.foldr stayOnCanvas s [topLeft, topRight, bottomRight, bottomLeft])
+  -- inner
+  |> constrainMid topMid topLeft topRight
+  |> constrainMid rightMid bottomRight topRight
+  |> constrainMid bottomMid bottomLeft bottomRight
+  |> constrainMid leftMid bottomLeft topLeft
+  --|> solve
 
 init : ( Model, Cmd Msg )
 init =
-  ( Model outerPoly Nothing initialSolver, Cmd.none )
+  ( Model outerPoly innerPoly Nothing initialSolver, Cmd.none )
 
 
 
@@ -122,17 +134,17 @@ closestVertex poly position =
   List.foldr f (NE.head poly) (NE.tail poly)
 
 updateHelp : Msg -> Model -> Model
-updateHelp msg ({outer, drag, solver} as model) =
+updateHelp msg ({outer, inner, drag, solver} as model) =
   case msg of
     DragStart xy ->
       let
         -- d = Debug.log "DragStart" ()
-        closest = closestVertex outer xy
+        closest = closestVertex (NE.append outer inner) xy
         updatedSolver = addEditVar closest.vars.x solver
             |> addEditVar closest.vars.y
             |> beginEdit
       in
-        Model outer (Just <| Drag xy xy closest) updatedSolver
+        Model outer inner (Just <| Drag xy xy closest) updatedSolver
 
     DragAt xy ->
       let
@@ -142,16 +154,17 @@ updateHelp msg ({outer, drag, solver} as model) =
           |> solve
       in case drag of
         Just d -> updateSolver d |>
-          (\s -> Model outer (Just <| Drag d.start xy d.vertex) s)
+          (\s -> Model outer inner (Just <| Drag d.start xy d.vertex) s)
 
         Nothing ->
-          Model outer Nothing solver
+          Model outer inner Nothing solver
 
     DragEnd _ ->
       let
         d = Debug.log "DragEnd" ()
+        pos = getPosition model
       in
-      Model (getPosition model) Nothing (endEdit solver)
+      Model (fst pos) (snd pos) Nothing (endEdit solver)
 
 
 
@@ -184,38 +197,52 @@ viewPosition position editing =
       A.cx (toString <| position.x),
       A.cy (toString <| position.y),
       A.r <| toString 10,
-      A.stroke "blue",
+      A.stroke "black",
       A.strokeWidth "2",
       A.fill fill
       ] []
 
-viewPoly : Poly -> Svg Msg
-viewPoly poly =
-    polygon [
-      A.points <| String.join " " (NE.toList <| NE.map (\v -> (toString v.position.x) ++ "," ++ (toString v.position.y)) poly),
-      A.stroke "blue",
-      A.strokeWidth "2",
-      --A.fill "transparent"
-      A.fill "rgba(0,0,255,0.1)"
-      ] []
+viewOutline : Poly -> List (Svg.Attribute Msg) -> Svg Msg
+viewOutline poly style =
+    polygon ([
+      A.points <| String.join " " (NE.toList <| NE.map (\v -> (toString v.position.x) ++ "," ++ (toString v.position.y)) poly)
+      ] ++ style) []
+
+viewPoly : Poly -> List (Svg.Attribute Msg) -> Svg Msg
+viewPoly poly style =
+    Svg.g [] ([viewOutline poly style] ++ (NE.toList <| NE.map (\p -> viewPosition p.position False) poly))
+
+outerPolyStyle =
+  [
+    A.stroke "blue",
+    A.strokeWidth "2",
+    A.fill "transparent"
+  ]
+
+innerPolyStyle =
+  [
+    A.stroke "red",
+    A.strokeWidth "2",
+    A.fill "transparent"
+  ]
 
 view : Model -> Html Msg
 view model =
   let
-    realPoly =
+    (outer, inner) =
       getPosition model
   in
     Svg.svg
       [ A.width "800", A.height "800", A.viewBox "0 0 800 800" ]
-      ([viewPoly realPoly] ++ (NE.toList <| NE.map (\p -> viewPosition p.position False) realPoly))
+      ([viewPoly outer outerPolyStyle] ++ [viewPoly inner innerPolyStyle])
 
 px : Int -> String
 px number =
   toString number ++ "px"
 
-
-getPosition : Model -> Poly
-getPosition {outer, drag, solver} =
+-- (outer, inner)
+getPosition : Model -> (Poly, Poly)
+getPosition {outer, inner, drag, solver} =
   let
     --gridRound x = (round <| x / 20) * 20
     f vertex = { vertex | position = {
@@ -226,9 +253,9 @@ getPosition {outer, drag, solver} =
   in
   case drag of
     Nothing ->
-      outer
+      (outer, inner)
 
-    Just {start,current} -> NE.map f outer
+    Just {start,current} -> (NE.map f outer, NE.map f inner)
 
 
 
