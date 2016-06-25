@@ -4,7 +4,8 @@ import Html.Attributes exposing (..)
 import Html.Events exposing (on)
 import Json.Decode as Json exposing ((:=))
 import Mouse exposing (Position)
-
+import List.Nonempty as NE exposing (Nonempty, (:::))
+import String
 import Svg exposing (..)
 import Svg.Attributes as A
 
@@ -21,47 +22,75 @@ main =
 
 -- MODEL
 
-type alias Bar = {
-    start: Position
-  , end: Position
-  }
+type alias Vertex = {
+    position: Position
+  , vars: { x: Variable, y: Variable }
+}
+
+type alias Poly = Nonempty Vertex
 
 type alias Model =
-    { bar : Bar
+    { outer : Poly
+    --, inner : Poly
     , drag : Maybe Drag
     , solver : Solver
     }
 
-type Control = Start | End
-
 type alias Drag =
     { start : Position
     , current : Position
-    , control : Control
+    , vertex : Vertex
     }
 
-sx = makeVariable 50
-sy = makeVariable 50
-ex = makeVariable 300
-ey = makeVariable 300
-cx = makeVariable 0
-cy = makeVariable 0
+topLeft = {
+  position = { x = 30, y = 30 },
+  vars = { x = makeVariable 30, y = makeVariable 30 }
+  }
 
+topRight = {
+  position = { x = 100, y = 30 },
+  vars = { x = makeVariable 100, y = makeVariable 30 }
+  }
+
+bottomRight = {
+  position = { x = 100, y = 100 },
+  vars = { x = makeVariable 100, y = makeVariable 100 }
+  }
+
+bottomLeft = {
+  position = { x = 30, y = 100 },
+  vars = { x = makeVariable 30, y = makeVariable 100 }
+  }
+
+outerPoly =
+  topLeft ::: (topRight ::: (bottomRight ::: (NE.fromElement bottomLeft)))
+
+stayOnCanvas : Vertex -> Solver -> Solver
+stayOnCanvas v s = addConstraint ((Var v.vars.x) .>=. (Lit 30)) s
+  |> addConstraint ((Var v.vars.y) .>=. (Lit 30))
+  |> addConstraint ((Var v.vars.x) .<=. (Lit 300))
+  |> addConstraint ((Var v.vars.y) .<=. (Lit 300))
 
 initialSolver = makeSolver
-  |> addPointStays [(ex, ey), (sx, sy)]
-  |> addConstraint ((Var sx) .<=. (Var ex))
-  |> addConstraint ((Var sy) .<=. (Var ey))
-  |> addConstraint ((Var cx) .=. (Var sx) .*. 0.5 .+. (Var ex) .*. 0.5)
-  |> addConstraint ((Var cy) .=. (Var sy) .*. 0.5 .+. (Var ey) .*. 0.5)
-  --|> solve
+  |> addPointStays [
+      (topLeft.vars.x, topLeft.vars.y),
+      (topRight.vars.x, topRight.vars.y),
+      (bottomRight.vars.x, bottomRight.vars.y),
+      (bottomLeft.vars.x, bottomLeft.vars.y)
+    ]
+  |> addConstraint ((Var topLeft.vars.x) .+. (Lit 30) .<=. (Var topRight.vars.x))
+  |> addConstraint ((Var topLeft.vars.y) .+. (Lit 30) .<=. (Var bottomLeft.vars.y))
+  |> addConstraint ((Var topLeft.vars.x) .+. (Lit 30) .<=. (Var bottomRight.vars.x))
+  |> addConstraint ((Var topLeft.vars.y) .+. (Lit 30) .<=. (Var bottomRight.vars.y))
+  |> addConstraint ((Var topRight.vars.y) .+. (Lit 30) .<=. (Var bottomLeft.vars.y))
+  |> addConstraint ((Var topRight.vars.y) .+. (Lit 30) .<=. (Var bottomRight.vars.y))
+  |> addConstraint ((Var bottomLeft.vars.x) .+. (Lit 30) .<=. (Var topRight.vars.x)) -- not sure
+  |> addConstraint ((Var bottomLeft.vars.x) .+. (Lit 30) .<=. (Var bottomRight.vars.x)) -- not sure
+  |> (\s -> List.foldr stayOnCanvas s [topLeft, topRight, bottomRight, bottomLeft])
 
 init : ( Model, Cmd Msg )
 init =
-  ( Model {
-    start=(Position (round <| getValue sx initialSolver) (round <| getValue sy initialSolver))
-    , end=(Position (round <| getValue ex initialSolver) (round <| getValue ey initialSolver))
-  } Nothing initialSolver, Cmd.none )
+  ( Model outerPoly Nothing initialSolver, Cmd.none )
 
 
 
@@ -85,53 +114,43 @@ distance a b =
   in
   sqrt (((f a.x)-(f b.x))^2 + ((f a.y)-(f b.y))^2)
 
-closestControl : Bar -> Position -> Control
-closestControl bar position =
+closestVertex : Poly -> Position -> Vertex
+closestVertex poly position =
   let
-    startDist = distance bar.start position
-    endDist = distance bar.end position
-  in if startDist < endDist then Start else End
+    f v minv = if (distance v.position position) < (distance minv.position position) then v else minv
+  in
+  List.foldr f (NE.head poly) (NE.tail poly)
 
 updateHelp : Msg -> Model -> Model
-updateHelp msg ({bar, drag, solver} as model) =
+updateHelp msg ({outer, drag, solver} as model) =
   case msg of
     DragStart xy ->
       let
-        d = Debug.log "DragStart" ()
-        control = closestControl bar xy
-        updatedSolver = case control of
-          End -> addEditVar ex solver
-            |> addEditVar ey
+        -- d = Debug.log "DragStart" ()
+        closest = closestVertex outer xy
+        updatedSolver = addEditVar closest.vars.x solver
+            |> addEditVar closest.vars.y
             |> beginEdit
-            -- |> solve
-          Start -> addEditVar sx solver
-            |> addEditVar sy
-            |> beginEdit
-            -- |> solve
       in
-        Model bar (Just <| Drag xy xy control) updatedSolver
+        Model outer (Just <| Drag xy xy closest) updatedSolver
 
     DragAt xy ->
       let
         -- d = Debug.log "DragAt" xy
-        newStart start current = suggestValue sx (toFloat (bar.start.x + current.x - start.x)) solver
-          |> suggestValue sy (toFloat (bar.start.y + current.y - start.y))
+        updateSolver {start,current,vertex} = suggestValue vertex.vars.x (toFloat (vertex.position.x + current.x - start.x)) solver
+          |> suggestValue vertex.vars.y (toFloat (vertex.position.y + current.y - start.y))
           |> solve
-        newEnd start current = suggestValue ex (toFloat (bar.end.x + current.x - start.x)) solver
-          |> suggestValue ey (toFloat (bar.end.y + current.y - start.y))
-          |> solve
-        updateSolver {start,current,control} = case control of
-          Start -> newStart start current
-          End -> newEnd start current
       in case drag of
         Just d -> updateSolver d |>
-          (\s -> Model bar (Just <| Drag d.start xy d.control) s)
+          (\s -> Model outer (Just <| Drag d.start xy d.vertex) s)
 
         Nothing ->
-          Model bar Nothing solver
+          Model outer Nothing solver
 
     DragEnd _ ->
-      let d = Debug.log "DragEnd" () in
+      let
+        d = Debug.log "DragEnd" ()
+      in
       Model (getPosition model) Nothing (endEdit solver)
 
 
@@ -170,70 +189,46 @@ viewPosition position editing =
       A.fill fill
       ] []
 
-viewCenter : Position -> Float -> Svg Msg
-viewCenter position radius =
-    circle [
-      A.cx (toString <| position.x),
-      A.cy (toString <| position.y),
-      A.r <| toString radius,
+viewPoly : Poly -> Svg Msg
+viewPoly poly =
+    polygon [
+      A.points <| String.join " " (NE.toList <| NE.map (\v -> (toString v.position.x) ++ "," ++ (toString v.position.y)) poly),
       A.stroke "blue",
       A.strokeWidth "2",
-      A.fill "transparent"
-      ] []
-
-viewBar : Position -> Position -> Svg Msg
-viewBar pos1 pos2 =
-    line [
-      A.x1 (toString pos1.x),
-      A.y1 (toString pos1.y),
-      A.x2 (toString pos2.x),
-      A.y2 (toString pos2.y),
-      A.stroke "blue",
-      A.strokeWidth "2"
+      --A.fill "transparent"
+      A.fill "rgba(0,0,255,0.1)"
       ] []
 
 view : Model -> Html Msg
 view model =
   let
-    realBar =
+    realPoly =
       getPosition model
-    center = Position (round <| getValue cx model.solver) (round <| getValue cy model.solver)
-    radius = (distance realBar.start realBar.end) / 2
-    --d = Debug.log "bar" realBar
-    editingStart = Maybe.withDefault False (Maybe.map (\d -> d.control == Start) model.drag)
-    editingEnd = Maybe.withDefault False (Maybe.map (\d -> d.control == End) model.drag)
   in
     Svg.svg
       [ A.width "800", A.height "800", A.viewBox "0 0 800 800" ]
-      [
-        viewBar realBar.start realBar.end,
-        --viewCenter center radius,
-        --viewCenter center 5,
-        viewPosition realBar.start editingStart,
-        viewPosition realBar.end editingEnd
-      ]
+      ([viewPoly realPoly] ++ (NE.toList <| NE.map (\p -> viewPosition p.position False) realPoly))
 
 px : Int -> String
 px number =
   toString number ++ "px"
 
 
-getPosition : Model -> Bar
-getPosition {bar, drag, solver} =
+getPosition : Model -> Poly
+getPosition {outer, drag, solver} =
   let
-    gridRound x = (round <| x / 20) * 20
-    newStart start current = Position (gridRound <| getValue sx solver) (gridRound <| getValue sy solver)
-    newEnd start current = Position (gridRound <| getValue ex solver) (gridRound <| getValue ey solver)
+    --gridRound x = (round <| x / 20) * 20
+    f vertex = { vertex | position = {
+        x = (round <| getValue vertex.vars.x solver)
+      , y = (round <| getValue vertex.vars.y solver)
+      }
+    }
   in
   case drag of
     Nothing ->
-      bar
+      outer
 
-    Just {start,current} ->
-      {
-        start = newStart start current,
-        end = newEnd start current
-        }
+    Just {start,current} -> NE.map f outer
 
 
 
