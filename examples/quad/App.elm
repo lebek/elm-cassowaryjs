@@ -25,6 +25,7 @@ main =
 type alias Vertex = {
     position: Position
   , vars: { x: Variable, y: Variable }
+  , selected: Bool
 }
 
 type alias Poly = Nonempty Vertex
@@ -39,12 +40,13 @@ type alias Model =
 type alias Drag =
     { start : Position
     , current : Position
-    , vertex : Vertex
+    , closest : (Float, Int, Vertex)
     }
 
 makeVertex x y = {
   position = { x = round <| x, y = round <| y },
-  vars = { x = makeVariable x, y = makeVariable y }
+  vars = { x = makeVariable x, y = makeVariable y },
+  selected = False
   }
 
 topLeft = makeVertex 30 30
@@ -126,12 +128,22 @@ distance a b =
   in
   sqrt (((f a.x)-(f b.x))^2 + ((f a.y)-(f b.y))^2)
 
-closestVertex : Poly -> Position -> Vertex
+-- closestVertex : Poly -> Position -> Vertex
+-- closestVertex poly position =
+--   let
+--     f v minv = if (distance v.position position) < (distance minv.position position) then v else minv
+--   in
+--   List.foldr f (NE.head poly) (NE.tail poly)
+
+
+closestVertex : Nonempty Vertex -> Position -> (Float, Int, Vertex)
 closestVertex poly position =
-  let
-    f v minv = if (distance v.position position) < (distance minv.position position) then v else minv
-  in
-  List.foldr f (NE.head poly) (NE.tail poly)
+    let
+      indexed = NE.indexedMap (\i v -> (distance v.position position, i, v)) poly
+      f (d, i, v) (mind, mini, minv) =
+        if d < mind then (d, i, v) else (mind, mini, minv)
+    in
+    List.foldr f (NE.head indexed) (NE.tail indexed)
 
 updateHelp : Msg -> Model -> Model
 updateHelp msg ({outer, inner, drag, solver} as model) =
@@ -139,22 +151,33 @@ updateHelp msg ({outer, inner, drag, solver} as model) =
     DragStart xy ->
       let
         -- d = Debug.log "DragStart" ()
-        closest = closestVertex (NE.append outer inner) xy
-        updatedSolver = addEditVar closest.vars.x solver
-            |> addEditVar closest.vars.y
+        (outerDist, outerIdx, outerVertex) = closestVertex outer xy
+        (innerDist, innerIdx, innerVertex) = closestVertex inner xy
+        select i poly = NE.indexedMap (\vi v -> if vi == i then {v|selected=True} else v) poly
+        newOuter = if outerDist <= innerDist then
+          select outerIdx outer else outer
+        newInner = if outerDist > innerDist then
+          select innerIdx inner else inner
+        closest = if outerDist <= innerDist then (outerDist, outerIdx, outerVertex) else (innerDist, innerIdx, innerVertex)
+        (_,_,vertex) = closest
+        updatedSolver = addEditVar vertex.vars.x solver
+            |> addEditVar vertex.vars.y
             |> beginEdit
       in
-        Model outer inner (Just <| Drag xy xy closest) updatedSolver
+        Model newOuter newInner (Just <| Drag xy xy closest) updatedSolver
 
     DragAt xy ->
       let
         -- d = Debug.log "DragAt" xy
-        updateSolver {start,current,vertex} = suggestValue vertex.vars.x (toFloat (vertex.position.x + current.x - start.x)) solver
-          |> suggestValue vertex.vars.y (toFloat (vertex.position.y + current.y - start.y))
-          |> solve
+        updateSolver {start,current,closest} =
+          let
+            (_,_,vertex) = closest
+          in suggestValue vertex.vars.x (toFloat (vertex.position.x + current.x - start.x)) solver
+            |> suggestValue vertex.vars.y (toFloat (vertex.position.y + current.y - start.y))
+            |> solve
       in case drag of
         Just d -> updateSolver d |>
-          (\s -> Model outer inner (Just <| Drag d.start xy d.vertex) s)
+          (\s -> Model outer inner (Just <| Drag d.start xy d.closest) s)
 
         Nothing ->
           Model outer inner Nothing solver
@@ -162,9 +185,10 @@ updateHelp msg ({outer, inner, drag, solver} as model) =
     DragEnd _ ->
       let
         d = Debug.log "DragEnd" ()
-        pos = getPosition model
+        (newOuter, newInner) = getPosition model
+        deselect = NE.map (\v -> {v|selected=False})
       in
-      Model (fst pos) (snd pos) Nothing (endEdit solver)
+      Model (deselect newOuter) (deselect newInner) Nothing (endEdit solver)
 
 
 
@@ -210,7 +234,7 @@ viewOutline poly style =
 
 viewPoly : Poly -> List (Svg.Attribute Msg) -> Svg Msg
 viewPoly poly style =
-    Svg.g [] ([viewOutline poly style] ++ (NE.toList <| NE.map (\p -> viewPosition p.position False) poly))
+    Svg.g [] ([viewOutline poly style] ++ (NE.toList <| NE.map (\p -> viewPosition p.position p.selected) poly))
 
 outerPolyStyle =
   [
