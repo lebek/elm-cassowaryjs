@@ -68,8 +68,8 @@ allVertex = NE.append outerPoly innerPoly
 stayOnCanvas : Vertex -> Solver -> Solver
 stayOnCanvas v s = addConstraint ((Var v.vars.x) .>=. (Lit 30)) s
   |> addConstraint ((Var v.vars.y) .>=. (Lit 30))
-  |> addConstraint ((Var v.vars.x) .<=. (Lit 500))
-  |> addConstraint ((Var v.vars.y) .<=. (Lit 500))
+  |> addConstraint ((Var v.vars.x) .<=. (Lit 800))
+  |> addConstraint ((Var v.vars.y) .<=. (Lit 800))
 
 constrainMid mid v1 v2 solver = addConstraint ((Var mid.vars.x) .=. (Var v1.vars.x) .*. 0.5 .+. (Var v2.vars.x) .*. 0.5) solver
   |> addConstraint ((Var mid.vars.y) .=. (Var v1.vars.y) .*. 0.5 .+. (Var v2.vars.y) .*. 0.5)
@@ -214,14 +214,15 @@ subscriptions model =
 viewPosition : Position -> Bool -> Svg Msg
 viewPosition position editing =
     let
-      fill = if editing then "red" else "transparent"
+      fill = if editing then "#999" else "transparent"
+      radius = if editing then 10 else 8
     in
     circle [
       onMouseDown,
       A.cx (toString <| position.x),
       A.cy (toString <| position.y),
-      A.r <| toString 10,
-      A.stroke "black",
+      A.r <| toString radius,
+      A.stroke "#666",
       A.strokeWidth "2",
       A.fill fill
       ] []
@@ -232,20 +233,20 @@ viewOutline poly style =
       A.points <| String.join " " (NE.toList <| NE.map (\v -> (toString v.position.x) ++ "," ++ (toString v.position.y)) poly)
       ] ++ style) []
 
-viewPoly : Poly -> List (Svg.Attribute Msg) -> Svg Msg
-viewPoly poly style =
-    Svg.g [] ([viewOutline poly style] ++ (NE.toList <| NE.map (\p -> viewPosition p.position p.selected) poly))
+viewVertices : Poly -> Svg Msg
+viewVertices poly =
+    Svg.g [] (NE.toList <| NE.map (\p -> viewPosition p.position p.selected) poly)
 
 outerPolyStyle =
   [
-    A.stroke "blue",
+    A.stroke "#beaed4",
     A.strokeWidth "2",
     A.fill "transparent"
   ]
 
 innerPolyStyle =
   [
-    A.stroke "red",
+    A.stroke "#7fc97f",
     A.strokeWidth "2",
     A.fill "transparent"
   ]
@@ -258,7 +259,10 @@ view model =
   in
     Svg.svg
       [ A.width "800", A.height "800", A.viewBox "0 0 800 800" ]
-      ([viewPoly outer outerPolyStyle] ++ [viewPoly inner innerPolyStyle])
+      ([viewOutline outer outerPolyStyle] ++
+        [viewOutline inner innerPolyStyle] ++
+          [viewVertices outer] ++
+            [viewVertices inner])
 
 px : Int -> String
 px number =
