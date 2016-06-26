@@ -34,6 +34,7 @@ type alias Model =
     { outer : Poly
     , inner : Poly
     , drag : Maybe Drag
+    , mouse : Maybe Position
     , solver : Solver
     }
 
@@ -104,7 +105,7 @@ initialSolver = makeSolver
 
 init : ( Model, Cmd Msg )
 init =
-  ( Model outerPoly innerPoly Nothing initialSolver, Cmd.none )
+  ( Model outerPoly innerPoly Nothing Nothing initialSolver, Cmd.none )
 
 
 
@@ -115,6 +116,7 @@ type Msg
     = DragStart Position
     | DragAt Position
     | DragEnd Position
+    | MoveTo Position
 
 
 update : Msg -> Model -> ( Model, Cmd Msg )
@@ -147,6 +149,7 @@ closestVertex poly position =
 
 updateHelp : Msg -> Model -> Model
 updateHelp msg ({outer, inner, drag, solver} as model) =
+  --let d = Debug.log "msg->" msg in
   case msg of
     DragStart xy ->
       let
@@ -160,11 +163,14 @@ updateHelp msg ({outer, inner, drag, solver} as model) =
           select innerIdx inner else inner
         closest = if outerDist <= innerDist then (outerDist, outerIdx, outerVertex) else (innerDist, innerIdx, innerVertex)
         (_,_,vertex) = closest
-        updatedSolver = addEditVar vertex.vars.x solver
+        updatedSolver start = addEditVar vertex.vars.x solver
             |> addEditVar vertex.vars.y
             |> beginEdit
+            |> suggestValue vertex.vars.x (toFloat start.x)
+            |> suggestValue vertex.vars.y (toFloat start.y)
+            |> solve
       in
-        Model newOuter newInner (Just <| Drag xy xy closest) updatedSolver
+        Model newOuter newInner (Just <| Drag vertex.position xy closest) Nothing (updatedSolver xy)
 
     DragAt xy ->
       let
@@ -177,18 +183,22 @@ updateHelp msg ({outer, inner, drag, solver} as model) =
             |> solve
       in case drag of
         Just d -> updateSolver d |>
-          (\s -> Model outer inner (Just <| Drag d.start xy d.closest) s)
+          (\s -> Model outer inner (Just <| Drag d.start xy d.closest) Nothing s)
 
         Nothing ->
-          Model outer inner Nothing solver
+          --let d = Debug.log "DragAt" () in
+          Model outer inner Nothing Nothing solver
 
     DragEnd _ ->
       let
-        d = Debug.log "DragEnd" ()
+        --d = Debug.log "DragEnd" ()
         (newOuter, newInner) = getPosition model
         deselect = NE.map (\v -> {v|selected=False})
       in
-      Model (deselect newOuter) (deselect newInner) Nothing (endEdit solver)
+      Model (deselect newOuter) (deselect newInner) Nothing Nothing (endEdit solver)
+
+    MoveTo xy ->
+      Model outer inner Nothing (Just xy) solver
 
 
 
@@ -199,7 +209,8 @@ subscriptions : Model -> Sub Msg
 subscriptions model =
   case model.drag of
     Nothing ->
-      Sub.none
+      Sub.batch [ Mouse.moves MoveTo ]
+      --Sub.none
 
     Just _ ->
       Sub.batch [ Mouse.moves DragAt, Mouse.ups DragEnd ]
@@ -256,17 +267,31 @@ view model =
   let
     (outer, inner) =
       getPosition model
+    springyOuter = case model.mouse of
+      Just mousePos -> NE.map (applySpring mousePos) outer
+      Nothing -> outer
   in
     Svg.svg
       [ A.width "800", A.height "800", A.viewBox "0 0 800 800" ]
       ([viewOutline outer outerPolyStyle] ++
         [viewOutline inner innerPolyStyle] ++
-          [viewVertices outer] ++
+          [viewVertices springyOuter] ++
             [viewVertices inner])
 
-px : Int -> String
-px number =
-  toString number ++ "px"
+applySpring : Position -> Vertex -> Vertex
+applySpring mousePos vertex =
+  let
+    mouseToVertDist = distance mousePos vertex.position
+  in if mouseToVertDist < 40 then { vertex | position = mousePos } else vertex
+    -- distFromEq = if mouseToVertDist < 25 then mouseToVertDist/1.5 else 0
+    -- direction = (toFloat (mousePos.x-vertex.position.x), toFloat (mousePos.y-vertex.position.y))
+    -- normalizedDirection = ((fst direction)/mouseToVertDist, (snd direction)/mouseToVertDist)
+  -- in { vertex | position = {
+  --     x = (+) vertex.position.x <| round <| (fst normalizedDirection) * distFromEq,
+  --     y = (+) vertex.position.y <| round <| (snd normalizedDirection) * distFromEq
+  --   }
+  -- }
+
 
 -- (outer, inner)
 getPosition : Model -> (Poly, Poly)
